@@ -13,7 +13,7 @@ set -o nounset
 MININET_DIR="$( cd -P "$( dirname "${BASH_SOURCE[0]}" )/../.." && pwd -P )"
 
 # Set up build directory, which by default is the working directory
-#  unless the working directory is a subdirectory of mininet, 
+#  unless the working directory is a subdirectory of mininet,
 #  in which case we use the directory containing mininet
 BUILD_DIR="$(pwd -P)"
 case $BUILD_DIR in
@@ -36,8 +36,9 @@ if [ "$ARCH" = "i686" ]; then ARCH="i386"; fi
 test -e /etc/debian_version && DIST="Debian"
 grep Ubuntu /etc/lsb-release &> /dev/null && DIST="Ubuntu"
 if [ "$DIST" = "Ubuntu" ] || [ "$DIST" = "Debian" ]; then
-    install='sudo apt-get -y install'
-    remove='sudo apt-get -y remove'
+    # Truly non-interactive apt-get installation
+    install='sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q install'
+    remove='sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q remove'
     pkginst='sudo dpkg -i'
     # Prereqs for this script
     if ! which lsb_release &> /dev/null; then
@@ -127,11 +128,11 @@ function mn_deps {
     if [ "$DIST" = "Fedora" -o "$DIST" = "RedHatEnterpriseServer" ]; then
         $install gcc make socat psmisc xterm openssh-clients iperf \
             iproute telnet python-setuptools libcgroup-tools \
-            ethtool help2man pyflakes pylint python-pep8
+            ethtool help2man pyflakes pylint python-pep8 python-pexpect
     else
         $install gcc make socat psmisc xterm ssh iperf iproute telnet \
             python-setuptools cgroup-bin ethtool help2man \
-            pyflakes pylint pep8
+            pyflakes pylint pep8 python-pexpect
     fi
 
     echo "Installing Mininet core"
@@ -162,7 +163,9 @@ function of {
     else
         $install git-core autotools-dev pkg-config libc6-dev
     fi
-    git clone git://openflowswitch.org/openflow.git
+    # was: git clone git://openflowswitch.org/openflow.git
+    # Use our own fork on github for now:
+    git clone git://github.com/mininet/openflow
     cd $BUILD_DIR/openflow
 
     # Patch controller to handle more than 16 switches
@@ -354,23 +357,28 @@ function ovs {
     fi
 
     $install openvswitch-switch
+    OVSC=""
     if $install openvswitch-controller; then
-        # Switch can run on its own, but
-        # Mininet should control the controller
-        # This appears to only be an issue on Ubuntu/Debian
-        if sudo service openvswitch-controller stop; then
-            echo "Stopped running controller"
-        fi
-        if [ -e /etc/init.d/openvswitch-controller ]; then
-            sudo update-rc.d openvswitch-controller disable
-        fi
+        OVSC="openvswitch-controller"
     else
         echo "Attempting to install openvswitch-testcontroller"
-        if ! $install openvswitch-testcontroller; then
+        if $install openvswitch-testcontroller; then
+            OVSC="openvswitch-testcontroller"
+        else
             echo "Failed - skipping openvswitch-testcontroller"
         fi
     fi
-
+    if [ "$OVSC" ]; then
+        # Switch can run on its own, but
+        # Mininet should control the controller
+        # This appears to only be an issue on Ubuntu/Debian
+        if sudo service $OVSC stop; then
+            echo "Stopped running controller"
+        fi
+        if [ -e /etc/init.d/$OVSC ]; then
+            sudo update-rc.d $OVSC disable
+        fi
+    fi
 }
 
 function remove_ovs {
@@ -416,12 +424,10 @@ function ryu {
 
     # install Ryu dependencies"
     $install autoconf automake g++ libtool python make
-    if [ "$DIST" = "Ubuntu" ]; then
+    if [ "$DIST" = "Ubuntu" -o "$DIST" = "Debian" ]; then
         $install libxml2 libxslt-dev python-pip python-dev
-        sudo pip install gevent
-    elif [ "$DIST" = "Debian" ]; then
-        $install libxml2 libxslt-dev python-pip python-dev
-        sudo pip install gevent
+        sudo pip install --upgrade gevent pbr webob routes paramiko \\
+            oslo.config
     fi
 
     # if needed, update python-six
@@ -553,7 +559,9 @@ function cbench {
         $install libsnmp-dev libpcap-dev libconfig-dev
     fi
     cd $BUILD_DIR/
-    git clone git://gitosis.stanford.edu/oflops.git
+    # was:  git clone git://gitosis.stanford.edu/oflops.git
+    # Use our own fork on github for now:
+    git clone git://github.com/mininet/oflops
     cd oflops
     sh boot.sh || true # possible error in autoreconf, so run twice
     sh boot.sh
@@ -698,6 +706,20 @@ function vm_clean {
     rm -f ~/.ssh/id_rsa* ~/.ssh/known_hosts
     sudo rm -f ~/.ssh/authorized_keys*
 
+    # Remove SSH keys and regenerate on boot
+    echo 'Removing SSH keys from /etc/ssh/'
+    sudo rm -f /etc/ssh/*key*
+    if ! grep mininet /etc/rc.local >& /dev/null; then
+        sudo sed -i -e "s/exit 0//" /etc/rc.local
+        echo '
+# mininet: regenerate ssh keys if we deleted them
+if ! stat -t /etc/ssh/*key* >/dev/null 2>&1; then
+    /usr/sbin/dpkg-reconfigure openssh-server
+fi
+exit 0
+' | sudo tee -a /etc/rc.local > /dev/null
+    fi
+
     # Remove Mininet files
     #sudo rm -f /lib/modules/python2.5/site-packages/mininet*
     #sudo rm -f /usr/bin/mnexec
@@ -712,7 +734,7 @@ function vm_clean {
     # Note: you can shrink the .vmdk in vmware using
     # vmware-vdiskmanager -k *.vmdk
     echo "Zeroing out disk blocks for efficient compaction..."
-    time sudo dd if=/dev/zero of=/tmp/zero bs=1M
+    time sudo dd if=/dev/zero of=/tmp/zero bs=1M || true
     sync ; sleep 1 ; sync ; sudo rm -f /tmp/zero
 
 }

@@ -54,6 +54,7 @@ NoKVM = False               # Don't use kvm and use emulation instead
 Branch = None               # Branch to update and check out before testing
 Zip = False                 # Archive .ovf and .vmdk into a .zip file
 Forward = []                # VM port forwarding options (-redir)
+Chown = ''                  # Build directory owner
 
 VMImageDir = os.environ[ 'HOME' ] + '/vm-images'
 
@@ -66,36 +67,18 @@ isoURLs = {
     'precise64server':
     'http://mirrors.kernel.org/ubuntu-releases/12.04/'
     'ubuntu-12.04.5-server-amd64.iso',
-    'quantal32server':
-    'http://mirrors.kernel.org/ubuntu-releases/12.10/'
-    'ubuntu-12.10-server-i386.iso',
-    'quantal64server':
-    'http://mirrors.kernel.org/ubuntu-releases/12.10/'
-    'ubuntu-12.10-server-amd64.iso',
-    'raring32server':
-    'http://mirrors.kernel.org/ubuntu-releases/13.04/'
-    'ubuntu-13.04-server-i386.iso',
-    'raring64server':
-    'http://mirrors.kernel.org/ubuntu-releases/13.04/'
-    'ubuntu-13.04-server-amd64.iso',
-    'saucy32server':
-    'http://mirrors.kernel.org/ubuntu-releases/13.10/'
-    'ubuntu-13.10-server-i386.iso',
-    'saucy64server':
-    'http://mirrors.kernel.org/ubuntu-releases/13.10/'
-    'ubuntu-13.10-server-amd64.iso',
     'trusty32server':
     'http://mirrors.kernel.org/ubuntu-releases/14.04/'
-    'ubuntu-14.04-server-i386.iso',
+    'ubuntu-14.04.3-server-i386.iso',
     'trusty64server':
     'http://mirrors.kernel.org/ubuntu-releases/14.04/'
-    'ubuntu-14.04-server-amd64.iso',
-    'utopic32server':
-    'http://mirrors.kernel.org/ubuntu-releases/14.10/'
-    'ubuntu-14.10-server-i386.iso',
-    'utopic64server':
-    'http://mirrors.kernel.org/ubuntu-releases/14.10/'
-    'ubuntu-14.10-server-amd64.iso',
+    'ubuntu-14.04.3-server-amd64.iso',
+    'wily32server':
+    'http://mirrors.kernel.org/ubuntu-releases/15.10/'
+    'ubuntu-15.10-server-i386.iso',
+    'wily64server':
+    'http://mirrors.kernel.org/ubuntu-releases/15.10/'
+    'ubuntu-15.10-server-amd64.iso',
 }
 
 
@@ -583,6 +566,9 @@ def useTest( vm, prompt=Prompt ):
         log( '* Restoring logging to stdout' )
         vm.logfile = stdout
 
+# A convenient alias for use - 'run'; we might want to allow
+# 'run' to take a parameter
+runTest = useTest
 
 def checkOutBranch( vm, branch, prompt=Prompt ):
     # This is a bit subtle; it will check out an existing branch (e.g. master)
@@ -792,18 +778,20 @@ def build( flavor='raring32server', tests=None, pre='', post='', memory=1024 ):
        post: command line to run in VM after tests
        prompt: shell prompt (default '$ ')
        memory: memory size in MB"""
-    global LogFile, Zip
+    global LogFile, Zip, Chown
     start = time()
     lstart = localtime()
     date = strftime( '%y%m%d-%H-%M-%S', lstart)
     ovfdate = strftime( '%y%m%d', lstart )
     dir = 'mn-%s-%s' % ( flavor, date )
     if Branch:
-        dir = 'mn-%s-%s-%s' % ( Branch, flavor, date )
+        dirname = 'mn-%s-%s-%s' % ( Branch, flavor, date )
     try:
-        os.mkdir( dir )
+        os.mkdir( dir)
     except:
         raise Exception( "Failed to create build directory %s" % dir )
+    if Chown:
+        run( 'chown %s %s' % ( Chown, dir ) )
     os.chdir( dir )
     LogFile = open( 'build.log', 'w' )
     log( '* Logging to', abspath( LogFile.name ) )
@@ -932,7 +920,7 @@ def bootAndRun( image, prompt=Prompt, memory=1024, cpuCores=1, outputFile=None,
 
 def buildFlavorString():
     "Return string listing valid build flavors"
-    return 'valid build flavors: ( %s )' % ' '.join( sorted( isoURLs ) )
+    return 'valid build flavors: %s' % ' '.join( sorted( isoURLs ) )
 
 
 def testDict():
@@ -948,15 +936,16 @@ def testDict():
 
 def testString():
     "Return string listing valid tests"
-    return 'valid tests: ( %s )' % ' '.join( testDict().keys() )
+    tests = [ '%s <%s>' % ( name, func.__doc__ )
+              for name, func in testDict().iteritems() ]
+    return 'valid tests: %s' % ', '.join( tests )
 
 
 def parseArgs():
     "Parse command line arguments and run"
-    global LogToConsole, NoKVM, Branch, Zip, TIMEOUT, Forward
+    global LogToConsole, NoKVM, Branch, Zip, TIMEOUT, Forward, Chown
     parser = argparse.ArgumentParser( description='Mininet VM build script',
-                                      epilog=buildFlavorString() + ' ' +
-                                      testString() )
+                                      epilog='' )
     parser.add_argument( '-v', '--verbose', action='store_true',
                         help='send VM output to console rather than log file' )
     parser.add_argument( '-d', '--depend', action='store_true',
@@ -976,7 +965,7 @@ def parseArgs():
                          help='Boot and test an existing VM image' )
     parser.add_argument( '-t', '--test', metavar='test', default=[],
                          action='append',
-                         help='specify a test to run' )
+                         help='specify a test to run; ' + testString() )
     parser.add_argument( '-w', '--timeout', metavar='timeout', type=int,
                             default=0, help='set expect timeout' )
     parser.add_argument( '-r', '--run', metavar='cmd', default='',
@@ -986,13 +975,15 @@ def parseArgs():
     parser.add_argument( '-b', '--branch', metavar='branch',
                          help='branch to install and/or check out and test' )
     parser.add_argument( 'flavor', nargs='*',
-                         help='VM flavor(s) to build (e.g. raring32server)' )
+                         help='VM flavor(s) to build; ' + buildFlavorString() )
     parser.add_argument( '-z', '--zip', action='store_true',
                          help='archive .ovf and .vmdk into .zip file' )
     parser.add_argument( '-o', '--out',
                          help='output file for test image (vmdk)' )
     parser.add_argument( '-f', '--forward', default=[], action='append',
                          help='forward VM ports to local server, e.g. tcp:5555::22' )
+    parser.add_argument( '-u', '--chown', metavar='user',
+                         help='specify an owner for build directory' )
     args = parser.parse_args()
     if args.depend:
         depend()
@@ -1014,6 +1005,8 @@ def parseArgs():
         Forward = args.forward
     if not args.test and not args.run and not args.post:
         args.test = [ 'sanity', 'core' ]
+    if args.chown:
+        Chown = args.chown
     for flavor in args.flavor:
         if flavor not in isoURLs:
             print "Unknown build flavor:", flavor
